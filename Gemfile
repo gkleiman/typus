@@ -1,17 +1,27 @@
 source 'http://rubygems.org'
 
-gemspec
+if ENV['RAILS_ENV'] == 'test'
+  gemspec
+else
+  gem "typus", :git => "https://github.com/fesplugas/typus.git"
+end
 
 gem "acts_as_list"
 gem "acts_as_tree"
 gem "dragonfly", "~>0.8.1"
 gem "factory_girl"
-gem "mysql"
+
+group :test do
+  gem "mysql"
+  gem "pg"
+end
+
 gem "paperclip"
-gem "pg"
+
 gem "rack-cache", :require => "rack/cache"
 gem "rails", "~> 3.0"
-gem "sqlite3-ruby"
+
+gem 'sqlite3-ruby', '1.2.1'
 
 # Keep this here because I use it as reference for development.
 gem "fastercsv", "1.5.3" if RUBY_VERSION < '1.9'
