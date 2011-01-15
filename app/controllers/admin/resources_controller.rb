@@ -31,6 +31,8 @@ class Admin::ResourcesController < Admin::BaseController
   end
 
   def new
+    check_if_we_can_add_a_new_item
+
     item_params = params.dup
     rejections = %w(controller action resource resource_id back_to selected)
     item_params.delete_if { |k, v| rejections.include?(k) }
@@ -43,6 +45,8 @@ class Admin::ResourcesController < Admin::BaseController
   # relationship between these items.
   #
   def create
+    check_if_we_can_add_a_new_item
+
     @item = @resource.new(params[@object_name])
 
     set_attributes_on_create
@@ -56,7 +60,7 @@ class Admin::ResourcesController < Admin::BaseController
 
   def edit
     add_action(:action_name => default_action.titleize, :action => default_action)
-    add_action(:action_name => "Unrelate", :action => "unrelate", :confirm => "#{Typus::I18n.t("Unrelate")}?", :resource => @resource.name, :resource_id => @item.id)
+    add_action(:action_name => "Unrelate", :action => "unrelate", :confirm => "#{Typus::I18n.t("Unrelate")}?", :resource => @resource.model_name, :resource_id => @item.id)
   end
 
   def show
@@ -272,8 +276,6 @@ class Admin::ResourcesController < Admin::BaseController
   #
   def create_with_back_to
 
-    @back_to = params[:back_to]
-
     #
     # Find the remote object which is named item!
     #
@@ -284,12 +286,80 @@ class Admin::ResourcesController < Admin::BaseController
     ##
     # Detect which kind of relationship there's between both models.
     #
-    #     item respect @item
+
+    ##
+    # Here we have something like:
+    #
+    # Eg 1.
+    #
+    #   - We are editing an Order and want to add a new Invoice.
+    #   - Click on "Add New" and we are redirected to the form.
+    #   - We want to know which kind of relationship there's between both
+    #     objects.
+    #
+    #         >> Order.relationship_with(Invoice)
+    #         => :has_one
+    #
+    # Eg 2.
+    #
+    #   - We are editing a Entry and want to add a new Attachment.
+    #   - Click on "Add New" and we are redirected to the form.
+    #   - We want to know which kind of relationship there's between both
+    #     objects.
+    #
+    #         >> Entry.relationship_with(Attachment)
+    #         => :has_and_belongs_to_many
+    #
+    # Eg 3.
+    #
+    #   - We are editing a Entry and want to add a new Comment.
+    #   - Click on "Add New" and we are redirected to the form.
+    #   - We want to know which kind of relationship there's between both
+    #     objects.
+    #
+    #         >> Entry.relationship_with(Comment)
+    #         => :has_many
+    #
+    # Eg 4.
+    #
+    #   - We are editing a Post (Entry) and want to add a new Attachment.
+    #   - Click on "Add New" and we are redirected to the form.
+    #   - We want to know which kind of relationship there's between both
+    #     objects.
+    #
+    #         >> Post.relationship_with(Attachment)
+    #         => :has_and_belongs_to_many
     #
 
-    association_class = item_class.is_sti? ? item_class.superclass : item_class
-    association_name = association_class.model_name.tableize.to_sym
+    case item_class.relationship_with(@resource)
+    when :has_one
+      # Order#invoice = @item
+      association_name = @resource.model_name.downcase.to_sym
+      item.send("#{association_name}=", @item)
+      worked = true
+    when :has_and_belongs_to_many
+      # Attachment#entries.push(item)
+      association_name = @resource.model_name.tableize.to_sym
+      worked = item.send(association_name).push(@item)
+    when :belongs_to
+      # Entry#comments.push(item)
+      association_name = item_class.model_name.tableize.to_sym
+      if item
+        worked = @item.send(association_name).push(item)
+      end
+    end
+
     association = @resource.reflect_on_association(association_name)
+
+    ##
+    # Set @back_to
+    #
+
+    @back_to = if item
+                 params[:back_to]
+               else
+                 "#{params[:back_to]}?#{association.primary_key_name}=#{@item.id}"
+               end
 
     ##
     # Finally delete the associated object. Depending on your models setup
@@ -297,13 +367,11 @@ class Admin::ResourcesController < Admin::BaseController
     #
 
     if item
-      if @item.send(association_name).push(item)
+      if worked
         notice = Typus::I18n.t("%{model} successfully updated.", :model => item_class.model_name.human)
       else
         alert = @item.error.full_messages
       end
-    else
-      @back_to = "#{params[:back_to]}?#{association.primary_key_name}=#{@item.id}"
     end
 
     redirect_to set_path, :notice => notice, :alert => alert
@@ -311,6 +379,33 @@ class Admin::ResourcesController < Admin::BaseController
 
   def default_action
     @resource.typus_options_for(:default_action_on_item)
+  end
+
+  ##
+  # If we are trying to create a new Invoice which belongs_to Order, we should
+  # verify before the the Order doesn't have an Invoice, otherwise we would
+  # have and Order with many Invoices which is something not desired.
+  #
+  # Eg:
+  #
+  #     @resource (Invoice)
+  #     params[:resource] = "Order"
+  #     params[:resource_id] = "1"
+  #
+  # Does this Order already has an Invoice. If true, redirect to back.
+  #
+  def check_if_we_can_add_a_new_item
+    if params[:resource] && params[:resource_id]
+      item_class = params[:resource].typus_constantize
+      item = item_class.find(params[:resource_id]) if params[:resource_id]
+
+      if item_class.relationship_with(@resource) == :has_one
+        association_name = @resource.model_name.downcase.to_sym
+        if item.send(association_name)
+          raise "Somehow I need to hide the `Add New` link.\nI'm protecting you off adding a new `#{@resource.model_name}` to `#{item_class.model_name}`."
+        end
+      end
+    end
   end
 
 end
